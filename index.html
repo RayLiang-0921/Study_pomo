@@ -58,6 +58,7 @@ main{max-width:1100px;margin:0 auto;padding:0 20px 40px;display:grid;gap:18px;
 .today-row .v{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
 .legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--muted);margin-top:8px}
+.tag{font-size:11px;padding:1px 6px;border-radius:6px;background:var(--card2);color:var(--muted);border:1px solid var(--line)}
 .empty{color:var(--muted);font-size:14px;padding:6px 0}
 #weekChart{width:100%;height:auto;display:block}
 .full{grid-column:1/-1}
@@ -238,11 +239,15 @@ function remainingMs(){
   if(t.running) return Math.max(0, t.endsAt - Date.now());
   return t.remaining==null ? modeLen(t.mode) : t.remaining;
 }
+function totalMs(){
+  const t=T();
+  return (t.remaining==null && !t.running) ? modeLen(t.mode) : (t.total || modeLen(t.mode));
+}
 function start(){
   const t=T();
   if(t.mode==='focus' && !subjById(t.subjectId)){ toast('請先選擇科目'); return; }
   const rem = remainingMs();
-  if(t.mode==='focus' && t.remaining==null) t.startedAt = Date.now();
+  if(t.remaining==null){ t.total = modeLen(t.mode); if(t.mode==='focus') t.startedAt = Date.now(); }
   t.endsAt = Date.now() + rem; t.running = true; t.remaining = rem;
   try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
   try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); actx.resume && actx.resume(); }catch(e){}
@@ -259,13 +264,13 @@ function nextMode(fromFocus){
   }
   t.running=false; t.remaining=null; t.endsAt=0;
 }
-function addSession(subjectId, startTs, minutes){
-  S.sessions.push({id:'r'+Date.now()+Math.random().toString(36).slice(2,6), subjectId, start:startTs, minutes});
+function addSession(subjectId, startTs, minutes, manual=false){
+  S.sessions.push({id:'r'+Date.now()+Math.random().toString(36).slice(2,6), subjectId, start:startTs, minutes, manual});
 }
 function complete(){
   const t=T();
   if(t.mode==='focus'){
-    const min = S.settings.focus;
+    const min = Math.round(totalMs()/60000);
     addSession(t.subjectId, t.startedAt || (Date.now()-min*60000), min);
     const name = subjById(t.subjectId)?.name || '';
     beep(); notify(`專注完成：${name} ${min} 分鐘，休息一下吧！`); toast(`🎉 已記錄 ${name} ${min} 分鐘`);
@@ -284,7 +289,7 @@ function skip(){
 function stop(){
   const t=T();
   if(t.mode==='focus'){
-    const elapsedMin = Math.floor((modeLen('focus') - remainingMs())/60000);
+    const elapsedMin = Math.floor((totalMs() - remainingMs())/60000);
     if(t.remaining==null && !t.running){ return; }
     if(elapsedMin>=1){
       if(confirm(`已專注 ${elapsedMin} 分鐘，要記錄這段時間嗎？`)){
@@ -300,7 +305,7 @@ function stop(){
 }
 
 function render(){
-  const t=T(), rem=remainingMs(), total=modeLen(t.mode);
+  const t=T(), rem=remainingMs(), total=totalMs();
   const mm = Math.floor(rem/60000), ss = Math.floor(rem%60000/1000);
   $('clock').textContent = `${pad(mm)}:${pad(ss)}`;
   const C = 678.58;
@@ -314,7 +319,9 @@ function render(){
   const label = t.mode==='focus' ? (subjById(t.subjectId)?.name||'專注') : '休息';
   document.title = t.running ? `${pad(mm)}:${pad(ss)} ${label}｜StudyPomo` : 'StudyPomo 讀書番茄鐘';
 }
-setInterval(()=>{ if(T().running){ if(remainingMs()<=0) complete(); else render(); } }, 250);
+function tick(){ if(T().running){ if(remainingMs()<=0) complete(); else render(); } }
+setInterval(tick, 250);
+document.addEventListener('visibilitychange', tick);
 
 /* ---------- 科目選單 ---------- */
 function fillSubjSelects(){
@@ -395,7 +402,8 @@ function renderStats(){
   $('histEmpty').style.display = list.length ? 'none' : 'block';
   $('hist').innerHTML = list.map(r=>{
     const d=new Date(r.start), s=subjById(r.subjectId)||{name:'(已刪除)',color:'#888'};
-    return `<tr><td class="num">${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}</td>
+    const when = r.manual ? `${d.getMonth()+1}/${d.getDate()} <span class="tag">補登</span>` : `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `<tr><td class="num">${when}</td>
       <td><i class="dot" style="background:${s.color}"></i>${esc(s.name)}</td>
       <td class="num">${r.minutes}</td>
       <td style="text-align:right"><button class="icon danger" data-del="${r.id}" title="刪除">✕</button></td></tr>`;
@@ -428,14 +436,14 @@ $('addOk').onclick = ()=>{
   const sid=$('addSubj').value, d=$('addDate').value, m=parseInt($('addMin').value,10);
   if(!sid || !d || !(m>=1 && m<=600)){ toast('請填寫科目、日期與 1–600 分鐘'); return; }
   const [Y,M,D] = d.split('-').map(Number);
-  addSession(sid, new Date(Y,M-1,D,12,0).getTime(), m);
+  addSession(sid, new Date(Y,M-1,D,12,0).getTime(), m, true);
   save(); renderStats(); $('addForm').hidden=true; $('addMin').value=''; toast('已補登');
 };
 
 // CSV
 $('csvBtn').onclick = ()=>{
   const rows = [['日期','時間','科目','分鐘']].concat([...S.sessions].sort((a,b)=>a.start-b.start).map(r=>{
-    const d=new Date(r.start); return [dayKey(d), `${pad(d.getHours())}:${pad(d.getMinutes())}`, subjById(r.subjectId)?.name||'(已刪除)', r.minutes];
+    const d=new Date(r.start); return [dayKey(d), r.manual ? '補登' : `${pad(d.getHours())}:${pad(d.getMinutes())}`, subjById(r.subjectId)?.name||'(已刪除)', r.minutes];
   }));
   const csv = '﻿' + rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -453,7 +461,8 @@ $('setSave').onclick = ()=>{
   const f=v('sFocus',1,180), sh=v('sShort',1,60), lo=v('sLong',1,60), it=v('sInt',2,8), go=v('sGoal',1,100);
   if([f,sh,lo,it,go].includes(null)){ toast('數值超出範圍，請檢查'); return; }
   S.settings={focus:f,short:sh,long:lo,interval:it,goal:go};
-  if(!T().running) T().remaining=null;
+  if(!T().running && T().remaining==null){ /* 尚未開始的這輪直接套用新長度 */ }
+  else if(!T().running) toast('設定已儲存，暫停中的這一輪維持原長度');
   save(); render(); renderStats(); $('setDlg').close(); toast('設定已儲存');
 };
 
